@@ -1,5 +1,5 @@
 from django.shortcuts import render
-from .client import AIClient
+from ...llm.client import AIClient
 import os
 from django.conf import settings
 
