@@ -1,60 +1,68 @@
-import sys
 import os
+import numpy as np
 
-# Добавляем корень проекта в sys.path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from extract.text_extractor import DocumentExtractor
+from preprocess.text_preprocessor import TextPreprocessor
+from embedding.text_embedder import TextEmbedder
+from retrieval.vector_retriever import VectorRetriever
 
-from embedding.embedder import TextEmbedder
-from retrieval.retriever import VectorRetriever
-from llm.client import AIClient
-
-def load_text(path: str) -> str:
-    """Читает весь текст из файла."""
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
-
-def split_text_into_chunks(text: str, chunk_size: int = 3) -> list[str]:
-    """
-    Разбивает текст на абзацы и объединяет их по chunk_size для индексации.
-    Это позволяет получать более информативные фрагменты.
-    """
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    chunks = []
-    for i in range(0, len(paragraphs), chunk_size):
-        chunk = " ".join(paragraphs[i:i+chunk_size])
-        chunks.append(chunk)
-    return chunks
 
 def main():
-    # Путь к файлу
-    base_path = os.path.join("src", "unit_tests", "files_for_testing", "1984.txt")
-    text = load_text(base_path)
+    # --- Параметры проекта ---
+    data_dir = os.path.join(os.path.dirname(__file__), "../data")
+    os.makedirs(data_dir, exist_ok=True)
 
-    # Разбиваем текст на крупные фрагменты
-    chunks = split_text_into_chunks(text, chunk_size=5)  # объединяем по 5 абзацев
+    index_name = "articles"      # имя индексных файлов
+    dim = 768                    # размерность эмбеддингов
+    docs_path = os.path.join(data_dir, "docs")  # папка с исходными документами
 
-    # Инициализируем эмбеддер
-    embeder = TextEmbedder()
-    embeddings = embeder.encode(chunks)
+    # --- Инициализация компонентов ---
+    extractor = DocumentExtractor()
+    preprocessor = TextPreprocessor(chunk_size=300)
+    embedder = TextEmbedder()
 
-    # Создаём FAISS индекс
-    dim = embeddings.shape[1]
-    retriever = VectorRetriever(dim=dim)
-    retriever.add_embeddings(embeddings, chunks)
+    print("[1] Проверяем наличие сохранённого индекса...")
+    try:
+        retriever = VectorRetriever.load(index_name)
+        print("[+] Индекс найден и загружен.")
+    except FileNotFoundError:
+        print("[!] Индекс не найден. Создаётся новый...")
+        retriever = VectorRetriever(dim=dim)
 
-    query = "Uinston Smith visiting O'Brien"
-    query_vec = embeder.encode([query])
+        all_chunks = []
 
-    # Поиск топ-5 фрагментов
-    results = retriever.search(query_vec, top_k=5)
+        # --- Обработка всех документов из data/docs ---
+        for fname in os.listdir(docs_path):
+            fpath = os.path.join(docs_path, fname)
+            if not os.path.isfile(fpath):
+                continue
 
-    print("Топ-5 фрагментов по запросу:")
-    for i, (chunk_text, dist) in enumerate(results, 1):
-        # Выводим первые 1000 символов для наглядности
-        snippet = chunk_text[:1000]
-        print(f"\n--- Фрагмент {i} ---\n{snippet}\nРасстояние: {dist:.4f}")
+            print(f"[2] Обработка: {fname}")
+            raw_text = extractor.extract(fpath)
+            chunks = preprocessor.process(raw_text)
+            all_chunks.extend(chunks)
+
+        print(f"[3] Эмбеддирование {len(all_chunks)} чанков...")
+        embeddings = embedder.encode(all_chunks)
+
+        retriever.add_embeddings(embeddings, all_chunks)
+        retriever.save(index_name)
+        print("[+] Индекс успешно создан и сохранён.")
+
+    # --- Поиск по запросу пользователя ---
+    while True:
+        query = input("\nВведите запрос (или 'exit'): ").strip()
+        if query.lower() == "exit":
+            break
+
+        query_chunks = preprocessor.process_querry(query)
+        query_vector = embedder.encode(query_chunks)
+        results = retriever.search(query_vector[0], top_k=5)
+
+        print("\n🔎 Результаты поиска:")
+        for i, (text, dist) in enumerate(results, 1):
+            print(f"\n[{i}] dist={dist:.4f}\n{text[:500]}...")  # показываем первые 500 символов
+
 
 if __name__ == "__main__":
-    #main()
-    client = AIClient()
-    print(client.generate("привет"))
+    main()
